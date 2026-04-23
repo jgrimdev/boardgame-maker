@@ -26,7 +26,7 @@ PAPER_SIZES = {
 class StickerImposerApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Sticker Imposer v3.1 - Zámek poměru & Náhodné žetony")
+        self.setWindowTitle("Sticker Imposer v3.2 - Volitelné řádkování & Náhodné žetony")
         self.resize(1250, 850)
 
         self.loaded_images = []  # path, name, w_px, h_px, dummy, color
@@ -66,6 +66,12 @@ class StickerImposerApp(QMainWindow):
         self.inp_gap = self.create_input(lay_paper, "Mezera mezi (mm):", "3")
         self.inp_bleed = self.create_input(lay_paper, "Spadávka (mm):", "0")
         self.inp_radius = self.create_input(lay_paper, "Poloměr rohů (mm):", "3")
+
+        self.chk_one_per_row = QCheckBox("Vynutit stejný druh obrázků na řádek")
+        self.chk_one_per_row.setChecked(True)
+        self.chk_one_per_row.setStyleSheet("font-weight: bold; color: #1976D2;")
+        self.chk_one_per_row.stateChanged.connect(self.auto_update_preview)
+        lay_paper.addWidget(self.chk_one_per_row)
 
         self.chk_marks = QCheckBox("Křížky (Ořezové značky)")
         self.chk_marks.setChecked(True)
@@ -198,7 +204,6 @@ class StickerImposerApp(QMainWindow):
     def load_dummy_data(self):
         w_mm = random.randint(30, 80)
         h_mm = random.randint(30, 80)
-        # Generuje spíše světlejší barvy (pastely), aby byly dobře vidět černé ořezové značky
         random_color = f"#{random.randint(0x888888, 0xFFFFFF):06x}"
 
         self.loaded_images.append({
@@ -214,7 +219,6 @@ class StickerImposerApp(QMainWindow):
     def populate_table(self):
         self.table.setRowCount(len(self.loaded_images))
         for row, data in enumerate(self.loaded_images):
-            # Náhled
             if data["dummy"]:
                 bg_color = data.get("color", "red")
                 img = Image.new('RGB', (50, 50), bg_color)
@@ -234,10 +238,8 @@ class StickerImposerApp(QMainWindow):
             lbl_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setCellWidget(row, 0, lbl_icon)
 
-            # Jméno
             self.table.setItem(row, 1, QTableWidgetItem(data["name"]))
 
-            # Šířka (mm) a Výška (mm)
             w_mm = data["w_px"] / MM_TO_PX
             h_mm = data["h_px"] / MM_TO_PX
 
@@ -253,17 +255,14 @@ class StickerImposerApp(QMainWindow):
             spin_h.setValue(h_mm)
             self.table.setCellWidget(row, 3, spin_h)
 
-            # Výpočet původního poměru stran
             ratio = w_mm / h_mm if h_mm > 0 else 1
 
-            # Logika pro zámek poměru stran
             def make_w_callback(sw, sh, r):
                 def cb(val):
                     if self.chk_lock_ratio.isChecked() and r > 0:
                         sh.blockSignals(True)
                         sh.setValue(val / r)
                         sh.blockSignals(False)
-
                 return cb
 
             def make_h_callback(sw, sh, r):
@@ -272,13 +271,11 @@ class StickerImposerApp(QMainWindow):
                         sw.blockSignals(True)
                         sw.setValue(val * r)
                         sw.blockSignals(False)
-
                 return cb
 
             spin_w.valueChanged.connect(make_w_callback(spin_w, spin_h, ratio))
             spin_h.valueChanged.connect(make_h_callback(spin_w, spin_h, ratio))
 
-            # Počet kusů
             spin_count = QSpinBox()
             spin_count.setRange(0, 999)
             spin_count.setValue(1)
@@ -296,6 +293,7 @@ class StickerImposerApp(QMainWindow):
             bleed_px = int(float(self.inp_bleed.text()) * MM_TO_PX)
             r_px = int(float(self.inp_radius.text()) * MM_TO_PX)
             margin_px = int(float(self.inp_margin.text()) * MM_TO_PX)
+            force_one_per_row = self.chk_one_per_row.isChecked()
 
             items_to_pack = []
 
@@ -332,21 +330,25 @@ class StickerImposerApp(QMainWindow):
             current_row_h = 0
             current_group_id = -1
 
-            # --- SKLÁDÁNÍ (JEDEN DRUH NA ŘÁDEK) ---
+            # --- SKLÁDÁNÍ ---
             for item in items_to_pack:
                 footprint_w = item["w_px"] + (2 * bleed_px) + gap_px
                 footprint_h = item["h_px"] + (2 * bleed_px) + gap_px
 
-                if current_group_id != -1 and current_group_id != item["group_id"] and cx > margin_px:
-                    cy += current_row_h
-                    cx = margin_px
-                    current_row_h = 0
+                # 1. Odřádkování, pokud se změní druh obrázku (Povoleno/Zakázáno podle checkboxu)
+                if force_one_per_row:
+                    if current_group_id != -1 and current_group_id != item["group_id"] and cx > margin_px:
+                        cy += current_row_h
+                        cx = margin_px
+                        current_row_h = 0
 
+                # 2. Běžné odřádkování, když obrázek přeteče šířku papíru
                 if cx + footprint_w - gap_px > paper_w_px - margin_px:
                     cy += current_row_h
                     cx = margin_px
                     current_row_h = 0
 
+                # 3. Založení nové stránky, když řádek přeteče výšku papíru
                 if cy + footprint_h - gap_px > paper_h_px - margin_px:
                     self.pages_layout_data.append(current_page_items)
                     current_page_items = []
@@ -378,7 +380,6 @@ class StickerImposerApp(QMainWindow):
                 page_img = Image.new('RGB', (paper_w_px, paper_h_px), 'white')
                 draw = ImageDraw.Draw(page_img)
 
-                # První průchod: Nalepíme obrázky
                 for placement in page_data:
                     item = placement["item"]
                     cut_x, cut_y = placement["cut_x"], placement["cut_y"]
@@ -406,7 +407,6 @@ class StickerImposerApp(QMainWindow):
 
                     page_img.paste(sticker, (paste_x, paste_y))
 
-                # Druhý průchod: Vykreslíme křivky a křížky (aby byly vždy nad obrázky)
                 for placement in page_data:
                     cut_x, cut_y = placement["cut_x"], placement["cut_y"]
                     w, h = placement["w"], placement["h"]

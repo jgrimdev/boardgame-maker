@@ -8,6 +8,7 @@ from main_A_pyqt import CardStudioApp
 from main_B_pyqt import ModernLaserGUI
 from main_C_pyqt import CardGeneratorApp
 from main_D_pyqt import StickerImposerApp
+from main_E_pyqt import SlicerStudioApp
 
 
 def resource_path(relative_path):
@@ -79,6 +80,9 @@ class MasterGUI(QMainWindow):
         self.app_d = StickerImposerApp()
         self.tabs.addTab(self.app_d, "🏷️ D: Sazba Žetonů/Samolepek")
 
+        # --- 5. Načtení aplikace E (Sticker Imposer) ---
+        self.app_d = SlicerStudioApp()
+        self.tabs.addTab(self.app_d, "🏷️ E: Tilemap extruder")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
