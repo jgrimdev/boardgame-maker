@@ -12,7 +12,6 @@ from PyQt6.QtGui import QImage, QPixmap, QPainter
 
 
 class GraphicsViewZoom(QGraphicsView):
-    # Vlastní signál, který pošle souřadnice kliknutí do hlavního okna
     clicked_scene = pyqtSignal(float, float)
 
     def __init__(self, scene):
@@ -23,7 +22,7 @@ class GraphicsViewZoom(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.zoom_factor = 1.15
-        self.delete_mode = False  # Stav pro režim mazání
+        self.delete_mode = False
 
     def wheelEvent(self, event):
         if event.angleDelta().y() > 0:
@@ -38,7 +37,6 @@ class GraphicsViewZoom(QGraphicsView):
         self.translate(delta.x(), delta.y())
 
     def mousePressEvent(self, event):
-        # Pokud je zapnutý režim mazání a klikneme levým tlačítkem, zablokujeme posun a pošleme klik dál
         if self.delete_mode and event.button() == Qt.MouseButton.LeftButton:
             scene_pos = self.mapToScene(event.position().toPoint())
             self.clicked_scene.emit(scene_pos.x(), scene_pos.y())
@@ -49,7 +47,7 @@ class GraphicsViewZoom(QGraphicsView):
 class ModernLaserGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Generátor DXF - Profi Nástroj (Filtry & Manuální Mazání)")
+        self.setWindowTitle("Generátor DXF - Rozpoznávání Tvarů & Profi Filtry")
         self.resize(1400, 950)
 
         self.dpi = 300
@@ -105,7 +103,6 @@ class ModernLaserGUI(QMainWindow):
         lyt_calc.addWidget(self.lbl_thresh)
         lyt_calc.addWidget(self.sld_thresh)
 
-        # --- NOVÉ: FILTR TENKÝCH ČAR ---
         self.lbl_noise = QLabel("Odstranit tenké čáry a šum: 0 px")
         self.sld_noise = self._create_slider(0, 20, 0, self.lbl_noise, "Odstranit tenké čáry a šum: {} px")
         lyt_calc.addWidget(self.lbl_noise)
@@ -130,6 +127,13 @@ class ModernLaserGUI(QMainWindow):
         line2.setFrameShape(QFrame.Shape.HLine)
         line2.setFrameShadow(QFrame.Shadow.Sunken)
         lyt_calc.addWidget(line2)
+
+        # --- NOVÉ: ROZPOZNÁVÁNÍ TVARŮ ---
+        self.chk_geom = QCheckBox("✨ Vynutit dokonalé tvary (Kruhy, Obdélníky)")
+        self.chk_geom.setChecked(False)
+        self.chk_geom.setStyleSheet("font-weight: bold; color: #1976D2;")
+        self.chk_geom.toggled.connect(self.queue_calc)
+        lyt_calc.addWidget(self.chk_geom)
 
         self.chk_smooth = QCheckBox("Zapnout matematické vyhlazení křivek")
         self.chk_smooth.setChecked(False)
@@ -160,7 +164,6 @@ class ModernLaserGUI(QMainWindow):
         grp_view = QGroupBox("3. Nástroje a Náhled")
         lyt_view = QVBoxLayout()
 
-        # --- NOVÉ: MANUÁLNÍ MAZÁNÍ ---
         self.btn_delete = QPushButton("🪄 Režim ručního mazání: VYPNUTO")
         self.btn_delete.setCheckable(True)
         self.btn_delete.setFixedHeight(35)
@@ -216,7 +219,6 @@ class ModernLaserGUI(QMainWindow):
         self.view = GraphicsViewZoom(self.scene)
         self.view.setStyleSheet("background-color: #1e1e1e;")
 
-        # Propojení signálu kliknutí s funkcí mazání
         self.view.clicked_scene.connect(self.handle_delete_click)
 
         main_layout.addWidget(self.view)
@@ -259,14 +261,11 @@ class ModernLaserGUI(QMainWindow):
             self.view.setCursor(Qt.CursorShape.ArrowCursor)
 
     def handle_delete_click(self, x, y):
-        # Projdeme křivky a zjistíme, zda jsme klikli dovnitř některé z nich
         for i, cnt in enumerate(self.smoothed_contours):
-            # OpenCV potřebuje pro test int32 formát
             cnt_cv = np.round(cnt).astype(np.int32)
-            # Pokud je výsledek >= 0, znamená to, že je bod uvnitř (nebo přesně na hraně)
             if cv2.pointPolygonTest(cnt_cv, (x, y), False) >= 0:
                 self.smoothed_contours.pop(i)
-                self.draw_overlay_layer()  # Okamžitě překreslíme
+                self.draw_overlay_layer()
                 break
 
     def queue_calc(self):
@@ -329,18 +328,18 @@ class ModernLaserGUI(QMainWindow):
         if self.cv_img_bgr is None: return
 
         threshold_val = self.sld_thresh.value()
-        noise_val = self.sld_noise.value()  # Hodnota pro mazání tenkých čar
+        noise_val = self.sld_noise.value()
         close_val = self.sld_close.value()
         offset = self.sld_offset.value()
         min_area = self.sld_area.value()
 
+        use_geom = self.chk_geom.isChecked()
         use_smooth = self.chk_smooth.isChecked()
         smooth_iterations = self.sld_smooth.value()
 
         gray = cv2.cvtColor(self.cv_img_bgr, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, threshold_val, 255, cv2.THRESH_BINARY_INV)
 
-        # 1. Značky pro zaměření laseru (z původních dat)
         orig_contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         valid_orig_contours = [cnt for cnt in orig_contours if cv2.contourArea(cnt) > min_area]
 
@@ -350,17 +349,14 @@ class ModernLaserGUI(QMainWindow):
             x, y, w, h = cv2.boundingRect(all_pts)
             self.fiducial_points = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
 
-        # 2. ÚPLNÉ SMAZÁNÍ TENKÝCH ČAR (Morphological Open) - Provedeme to PŘED OFSETEM
         if noise_val > 0:
             kernel_noise = np.ones((noise_val, noise_val), np.uint8)
             thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_noise)
 
-        # 3. Zacelení děr
         if close_val > 0:
             kernel_close = np.ones((close_val, close_val), np.uint8)
             thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
 
-        # 4. Ofset
         if offset > 0:
             kernel_off = np.ones((offset, offset), np.uint8)
             thresh = cv2.erode(thresh, kernel_off, iterations=1)
@@ -369,17 +365,41 @@ class ModernLaserGUI(QMainWindow):
             kernel_off = np.ones((abs_offset, abs_offset), np.uint8)
             thresh = cv2.dilate(thresh, kernel_off, iterations=1)
 
-        # Nalezení finálních kontur a případné vyhlazení
         raw_contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         self.smoothed_contours = []
         for cnt in raw_contours:
-            if cv2.contourArea(cnt) > min_area:
-                if use_smooth and smooth_iterations > 0:
-                    smoothed = self.smooth_contour_math(cnt, iterations=smooth_iterations)
-                    self.smoothed_contours.append(smoothed)
-                else:
-                    self.smoothed_contours.append(cnt.astype(float))
+            area = cv2.contourArea(cnt)
+            if area > min_area:
+                processed_cnt = cnt.astype(float)
+                shape_found = False
+
+                # --- MAGIE ROZPOZNÁVÁNÍ TVARŮ ---
+                if use_geom:
+                    # Test na Kruh
+                    (cx, cy), radius = cv2.minEnclosingCircle(cnt)
+                    circle_area = np.pi * (radius ** 2)
+                    if circle_area > 0 and (area / circle_area) > 0.85:  # Pokud je z 85 % podobný kruhu
+                        # Vygenerujeme naprosto dokonalý kruh o 100 bodech (laser pojede krásně plynule)
+                        angles = np.linspace(0, 2 * np.pi, 100, endpoint=False)
+                        processed_cnt = np.empty((100, 1, 2), dtype=float)
+                        processed_cnt[:, 0, 0] = cx + radius * np.cos(angles)
+                        processed_cnt[:, 0, 1] = cy + radius * np.sin(angles)
+                        shape_found = True
+                    else:
+                        # Test na Obdélník/Čtverec
+                        rect = cv2.minAreaRect(cnt)
+                        box = cv2.boxPoints(rect)
+                        box_area = rect[1][0] * rect[1][1]
+                        if box_area > 0 and (area / box_area) > 0.85:  # Pokud je z 85 % podobný obdélníku
+                            processed_cnt = box.reshape(4, 1, 2).astype(float)
+                            shape_found = True
+
+                # Pokud to nebyl ani kruh ani čtverec, aplikujeme standardní vyhlazení křivky
+                if not shape_found and use_smooth and smooth_iterations > 0:
+                    processed_cnt = self.smooth_contour_math(processed_cnt, iterations=smooth_iterations)
+
+                self.smoothed_contours.append(processed_cnt)
 
         self.draw_overlay_layer()
 
