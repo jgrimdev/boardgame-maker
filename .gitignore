@@ -1,0 +1,25 @@
+# --- Tvoje složky s obrázky a výstupy ---
+export_karet/
+exports/
+karty/
+KARTY_EN/
+karty_export/
+mix/
+
+# --- Tvoje dočasné a datové soubory ---
+export.txt
+tiskova_data_pro_sazbu.xlsx
+# test.py  # (Odmaž mřížku na začátku, pokud na Gitu nechceš ani tento soubor)
+
+# --- Standardní Python ignorované složky ---
+.venv/
+venv/
+__pycache__/
+
+# --- Build složky (když děláš .exe přes PyInstaller) ---
+build/
+dist/
+*.spec
+
+# --- Nastavení editoru (PyCharm) ---
+.idea/

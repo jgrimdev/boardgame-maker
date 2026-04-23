@@ -1,0 +1,8 @@
+PyQt6
+pandas
+Pillow
+openpyxl
+ezdxf
+opencv-python
+numpy
+PyMuPDF
