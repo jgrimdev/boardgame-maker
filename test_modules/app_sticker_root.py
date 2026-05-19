@@ -8,8 +8,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QSlider, QCheckBox,
                              QGroupBox, QFileDialog, QMessageBox, QGraphicsView,
                              QGraphicsScene, QGraphicsPixmapItem, QFrame,
-                             QTabWidget, QSpinBox, QDoubleSpinBox, QComboBox,
-                             QFormLayout, QRadioButton, QScrollArea)
+                             QRadioButton, QSpinBox, QDoubleSpinBox, QComboBox, QFormLayout, QTabWidget, QScrollArea)
 from PyQt6.QtGui import QImage, QPixmap, QPainter
 
 
@@ -50,7 +49,7 @@ class ModernLaserGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self._ui_loaded = False
-        self.setWindowTitle("Generátor DXF - Ultimátní PnP Nástroj (Kráječ + Detekce)")
+        self.setWindowTitle("Generátor DXF - Architektura Vektorové Paměti")
         self.resize(1550, 950)
 
         self.dpi = 300
@@ -60,13 +59,22 @@ class ModernLaserGUI(QMainWindow):
         self.img_height_px = 0
         self.img_width_px = 0
 
-        self.auto_contours = []
-        self.edge_contours = []
+        # DATABÁZE TVARŮ
+        self.shapes = []  # Formát: {'type': 'Kolečko'/'Čtvereček'/'raw', 'cx': float, 'cy': float, 'cnt': numpy_array}
+        self.current_contours = []  # Finální vyrenderované křivky pro DXF
+        self.split_grids = []  # Ukládání informace o tom, kde se rýsovala mřížka pro růžový náhled
         self.fiducial_points = []
 
-        self.calc_timer = QTimer()
-        self.calc_timer.setSingleShot(True)
-        self.calc_timer.timeout.connect(self.run_calculations)
+        # OCHRANA RUČNÍCH ÚPRAV
+        self.manual_edits_active = False
+
+        self.detect_timer = QTimer()
+        self.detect_timer.setSingleShot(True)
+        self.detect_timer.timeout.connect(self.run_detection)
+
+        self.render_timer = QTimer()
+        self.render_timer.setSingleShot(True)
+        self.render_timer.timeout.connect(self.render_shapes)
 
         self._init_ui()
         self._ui_loaded = True
@@ -107,11 +115,7 @@ class ModernLaserGUI(QMainWindow):
         self.btn_load = QPushButton("Načíst Soubor (PDF / PNG / JPG)")
         self.btn_load.setFixedHeight(40)
         self.btn_load.clicked.connect(self.load_file)
-        self.chk_force_a4 = QCheckBox("Vynutit formát A4 (Zruš pro absolutně přesné mm!)")
-        self.chk_force_a4.setChecked(False)
-        self.chk_force_a4.setStyleSheet("color: #d32f2f; font-weight: bold;")
         lyt_load.addWidget(self.btn_load)
-        lyt_load.addWidget(self.chk_force_a4)
         grp_load.setLayout(lyt_load)
         left_layout.addWidget(grp_load)
 
@@ -120,10 +124,10 @@ class ModernLaserGUI(QMainWindow):
         grp_dims.setStyleSheet("background-color: #e3f2fd;")
         form_dims = QFormLayout(grp_dims)
 
-        self.dim_circle_d = self._create_double_spinbox(1.0, 500.0, 19.7, self.queue_calc)
-        self.dim_sq_w = self._create_double_spinbox(1.0, 500.0, 17.6, self.queue_calc)
-        self.dim_sq_h = self._create_double_spinbox(1.0, 500.0, 17.6, self.queue_calc)
-        self.dim_sq_r = self._create_double_spinbox(0.0, 100.0, 2.0, self.queue_calc)
+        self.dim_circle_d = self._create_double_spinbox(1.0, 500.0, 19.7, self.request_render)
+        self.dim_sq_w = self._create_double_spinbox(1.0, 500.0, 17.6, self.request_render)
+        self.dim_sq_h = self._create_double_spinbox(1.0, 500.0, 17.6, self.request_render)
+        self.dim_sq_r = self._create_double_spinbox(0.0, 100.0, 2.0, self.request_render)
 
         form_dims.addRow(QLabel("<b>Kolečko:</b>"))
         form_dims.addRow("Průměr (mm):", self.dim_circle_d)
@@ -135,23 +139,17 @@ class ModernLaserGUI(QMainWindow):
 
         # --- 3. ZÁLOŽKY DETEKCE ---
         self.tabs = QTabWidget()
-        self.tabs.currentChanged.connect(self.tab_changed)
+        self.tabs.currentChanged.connect(self.force_detection)
 
         # TAB A: AUTO DETEKCE (Fleky)
         tab_auto = QWidget()
         lyt_auto = QVBoxLayout(tab_auto)
-
         self.lbl_thresh = QLabel("Práh kontrastu: 240")
         self.sld_thresh = self._create_slider(100, 254, 240, self.lbl_thresh, "Práh kontrastu: {}")
         self.chk_inner_holes = QCheckBox("Vyříznout i vnitřní otvory (Holes)")
-        self.chk_inner_holes.toggled.connect(self.queue_calc)
-
-        # TYHLE DVA POSUVNÍKY ZPŮSOBOVALY CHYBU - VRÁCENY!
+        self.chk_inner_holes.toggled.connect(self.request_detection)
         self.lbl_noise = QLabel("Odstranit tenké čáry: 0 px")
         self.sld_noise = self._create_slider(0, 20, 0, self.lbl_noise, "Odstranit tenké čáry: {} px")
-        self.lbl_offset = QLabel("Ofset (- ven, + dovnitř): 5 px")
-        self.sld_offset = self._create_slider(-30, 30, 5, self.lbl_offset, "Ofset (- ven, + dovnitř): {} px")
-
         self.lbl_close = QLabel("Zacelení děr: 5 px")
         self.sld_close = self._create_slider(0, 50, 5, self.lbl_close, "Zacelení děr: {} px")
 
@@ -162,20 +160,24 @@ class ModernLaserGUI(QMainWindow):
         lyt_auto.addWidget(self.sld_noise)
         lyt_auto.addWidget(self.lbl_close)
         lyt_auto.addWidget(self.sld_close)
-        lyt_auto.addWidget(self.lbl_offset)
-        lyt_auto.addWidget(self.sld_offset)
 
         # ROZKRÁJEČ
         grp_split = QGroupBox("Rozkrájet velké spojené objekty (černý kříž)")
         form_split = QFormLayout(grp_split)
         self.chk_split = QCheckBox("Rozkrájet do mřížky podle rozměrů nahoře")
         self.chk_split.setChecked(True)
-        self.chk_split.toggled.connect(self.queue_calc)
+        self.chk_split.toggled.connect(self.request_detection)
         self.cmb_split_shape = QComboBox()
         self.cmb_split_shape.addItems(["Kolečko", "Čtvereček"])
-        self.cmb_split_shape.currentIndexChanged.connect(self.queue_calc)
+        self.cmb_split_shape.currentIndexChanged.connect(self.request_detection)
+
+        self.chk_show_grid = QCheckBox("Zobrazit mřížku kráječe (růžově)")
+        self.chk_show_grid.setChecked(True)
+        self.chk_show_grid.toggled.connect(self.request_render)
+
         form_split.addRow(self.chk_split)
         form_split.addRow("Výplň mřížky:", self.cmb_split_shape)
+        form_split.addRow(self.chk_show_grid)
         lyt_auto.addWidget(grp_split)
 
         self.lbl_area = QLabel("Min. plocha objektu: 500 px")
@@ -193,7 +195,7 @@ class ModernLaserGUI(QMainWindow):
 
         self.cmb_edge_shape = QComboBox()
         self.cmb_edge_shape.addItems(["Hledat Zaoblené Čtverce", "Hledat Kolečka"])
-        self.cmb_edge_shape.currentIndexChanged.connect(self.queue_calc)
+        self.cmb_edge_shape.currentIndexChanged.connect(self.request_detection)
         lyt_edge_det.addWidget(QLabel("Výchozí tvar pro tuto záložku:"))
         lyt_edge_det.addWidget(self.cmb_edge_shape)
 
@@ -213,9 +215,13 @@ class ModernLaserGUI(QMainWindow):
         self.tabs.addTab(tab_edge, "Detekce Linek")
         left_layout.addWidget(self.tabs)
 
-        # --- 4. NÁSTROJE MYŠI ---
-        grp_tools = QGroupBox("Nástroje Myši (Klikni do plátna)")
+        # --- 4. NÁSTROJE MYŠI & STAV ---
+        grp_tools = QGroupBox("Nástroje Myši a Úpravy")
         lyt_tools = QVBoxLayout(grp_tools)
+
+        self.lbl_status = QLabel("Stav: 🟢 Automatická detekce")
+        self.lbl_status.setStyleSheet("font-weight: bold; color: #2E7D32; padding: 5px;")
+        lyt_tools.addWidget(self.lbl_status)
 
         self.rad_move = QRadioButton("🖐️ Posun plátna (Nic nedělat)")
         self.rad_move.setChecked(True)
@@ -243,8 +249,8 @@ class ModernLaserGUI(QMainWindow):
         self.btn_clear_all = QPushButton("🗑️ Vymazat vše")
         self.btn_clear_all.clicked.connect(self.clear_all_shapes)
         self.btn_regen = QPushButton("⚡ Znovu vygenerovat")
-        self.btn_regen.setStyleSheet("background-color: #f57c00; color: white;")
-        self.btn_regen.clicked.connect(self.queue_calc)
+        self.btn_regen.setStyleSheet("background-color: #f57c00; color: white; font-weight: bold;")
+        self.btn_regen.clicked.connect(self.force_detection)
         btn_row.addWidget(self.btn_clear_all)
         btn_row.addWidget(self.btn_regen)
         lyt_tools.addLayout(btn_row)
@@ -260,19 +266,17 @@ class ModernLaserGUI(QMainWindow):
 
         self.chk_show_img = QCheckBox("Ukázat Tisk")
         self.chk_show_img.setChecked(True)
-        self.chk_show_img.toggled.connect(self.update_layer_visibility)
+        self.chk_show_img.toggled.connect(self.request_render)
 
         self.lbl_alpha_img = QLabel("Průhlednost tisku: 60%")
         self.sld_alpha_img = self._create_slider(0, 100, 60, self.lbl_alpha_img, "Průhlednost tisku: {}%")
-        self.sld_alpha_img.valueChanged.connect(self.update_layer_opacity)
 
         self.chk_show_cut = QCheckBox("Ukázat Křivky a Značky")
         self.chk_show_cut.setChecked(True)
-        self.chk_show_cut.toggled.connect(self.update_layer_visibility)
+        self.chk_show_cut.toggled.connect(self.request_render)
 
         self.lbl_alpha_cut = QLabel("Průhlednost křivek: 100%")
         self.sld_alpha_cut = self._create_slider(0, 100, 100, self.lbl_alpha_cut, "Průhlednost křivek: {}%")
-        self.sld_alpha_cut.valueChanged.connect(self.update_layer_opacity)
 
         lyt_view.addWidget(self.chk_show_img)
         lyt_view.addWidget(self.sld_alpha_img)
@@ -308,7 +312,7 @@ class ModernLaserGUI(QMainWindow):
 
         update_label(v_default)
         slider.valueChanged.connect(update_label)
-        slider.valueChanged.connect(self.queue_calc)
+        slider.valueChanged.connect(self.request_detection)
         return slider
 
     def _create_double_spinbox(self, v_min, v_max, v_default, callback):
@@ -326,8 +330,19 @@ class ModernLaserGUI(QMainWindow):
     def px_to_mm(self, px_value):
         return (px_value * 25.4) / self.dpi
 
+    def set_manual_edits_state(self, is_active):
+        self.manual_edits_active = is_active
+        if is_active:
+            self.lbl_status.setText("Stav: 🟠 Ruční úpravy (Detekce pozastavena)")
+            self.lbl_status.setStyleSheet(
+                "font-weight: bold; color: #E65100; padding: 5px; border: 1px solid #E65100; border-radius: 4px;")
+        else:
+            self.lbl_status.setText("Stav: 🟢 Automatická detekce")
+            self.lbl_status.setStyleSheet(
+                "font-weight: bold; color: #2E7D32; padding: 5px; border: 1px solid #2E7D32; border-radius: 4px;")
+
     def tab_changed(self, index, *args):
-        self.run_calculations()
+        self.force_detection()
 
     def update_mouse_mode(self, *args):
         if self.rad_move.isChecked():
@@ -336,11 +351,8 @@ class ModernLaserGUI(QMainWindow):
             self.view.edit_mode = False
         else:
             self.view.edit_mode = True
-            if self.rad_stamp_circ.isChecked():
-                self.view.mouse_action = "stamp_circ"
-                self.view.setCursor(Qt.CursorShape.CrossCursor)
-            elif self.rad_stamp_sq.isChecked():
-                self.view.mouse_action = "stamp_sq"
+            if self.rad_stamp_circ.isChecked() or self.rad_stamp_sq.isChecked():
+                self.view.mouse_action = "stamp_circ" if self.rad_stamp_circ.isChecked() else "stamp_sq"
                 self.view.setCursor(Qt.CursorShape.CrossCursor)
             elif self.rad_erase.isChecked():
                 self.view.mouse_action = "delete"
@@ -349,77 +361,75 @@ class ModernLaserGUI(QMainWindow):
                 self.view.mouse_action = "toggle"
                 self.view.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    def get_active_list(self):
-        idx = self.tabs.currentIndex()
-        if idx == 0:
-            return self.auto_contours
-        else:
-            return self.edge_contours
-
     def clear_all_shapes(self):
-        active_list = self.get_active_list()
-        active_list.clear()
-        self._calc_fiducials()
-        self.draw_overlay_layer()
+        self.shapes.clear()
+        self.split_grids.clear()
+        self.set_manual_edits_state(True)
+        self.request_render()
 
     def handle_scene_click(self, x, y):
         if self.cv_img_bgr is None: return
-        active_list = self.get_active_list()
 
         # Vložení razítka
-        if self.view.mouse_action == "stamp_circ":
-            d_px = self.mm_to_px(self.dim_circle_d.value())
-            new_shape = self.create_circle_contour(x, y, d_px / 2.0)
-            active_list.append(new_shape)
-            self._calc_fiducials()
-            self.draw_overlay_layer()
+        if self.view.mouse_action in ["stamp_circ", "stamp_sq"]:
+            tvar = "Kolečko" if self.view.mouse_action == "stamp_circ" else "Čtvereček"
+            self.shapes.append({'type': tvar, 'cx': x, 'cy': y})
+            self.set_manual_edits_state(True)
+            self.request_render()
             return
 
-        if self.view.mouse_action == "stamp_sq":
-            w_px = self.mm_to_px(self.dim_sq_w.value())
-            h_px = self.mm_to_px(self.dim_sq_h.value())
-            r_px = self.mm_to_px(self.dim_sq_r.value())
-            new_shape = self.get_rounded_rect_contour(x, y, w_px, h_px, r_px)
-            active_list.append(new_shape)
-            self._calc_fiducials()
-            self.draw_overlay_layer()
-            return
-
-        # Nástroje vyžadující kliknutí na existující tvar
-        for i, cnt in enumerate(active_list):
+        # Nástroje vyžadující kliknutí na existující tvar (musíme testovat proti reálným vykresleným pixelům)
+        for i, cnt in enumerate(self.current_contours):
             cnt_cv = np.round(cnt).astype(np.int32)
             if cv2.pointPolygonTest(cnt_cv, (x, y), False) >= 0:
-
                 if self.view.mouse_action == "delete":
-                    active_list.pop(i)
-                    self._calc_fiducials()
-                    self.draw_overlay_layer()
-                    break
-
+                    self.shapes.pop(i)
                 elif self.view.mouse_action == "toggle":
-                    bx, by, bw, bh = cv2.boundingRect(cnt_cv)
-                    cx, cy = bx + bw / 2.0, by + bh / 2.0
-                    is_circle = (len(cnt) == 100)
+                    current_type = self.shapes[i].get('type', 'raw')
+                    if current_type == 'Kolečko':
+                        self.shapes[i]['type'] = 'Čtvereček'
+                    else:  # Ať už to byl raw nebo čtverec, změní se na kolečko
+                        self.shapes[i]['type'] = 'Kolečko'
 
-                    if is_circle:
-                        w_px = self.mm_to_px(self.dim_sq_w.value())
-                        h_px = self.mm_to_px(self.dim_sq_h.value())
-                        r_px = self.mm_to_px(self.dim_sq_r.value())
-                        new_shape = self.get_rounded_rect_contour(cx, cy, w_px, h_px, r_px)
-                    else:
-                        d_px = self.mm_to_px(self.dim_circle_d.value())
-                        new_shape = self.create_circle_contour(cx, cy, d_px / 2.0)
+                self.set_manual_edits_state(True)
+                self.request_render()
+                break
 
-                    active_list[i] = new_shape
-                    self.draw_overlay_layer()
-                    break
-
-    def queue_calc(self, *args):
+    # --- ŘÍZENÍ VÝPOČTŮ ---
+    def request_detection(self, *args):
+        """Zavolá se při hýbání posuvníky detekce (Práh, Guma, Mřížka)."""
         if not self._ui_loaded: return
-        if self.cv_img_bgr is not None:
-            self.calc_timer.start(250)
+        # Pokud uživatel dělal ruční úpravy, detekce se neprovede, aby se mu to nepřepsalo!
+        if self.manual_edits_active: return
+        self.detect_timer.start(250)
 
-    # --- NAČÍTÁNÍ SOUBORU ---
+    def force_detection(self, *args):
+        """Uživatel ručně zmáčkl tlačítko Znovu Vygenerovat."""
+        if not self._ui_loaded: return
+        self.set_manual_edits_state(False)
+        self.detect_timer.start(50)
+
+    def request_render(self, *args):
+        """Zavolá se při změně milimetrových rozměrů nebo při klikání."""
+        if not self._ui_loaded: return
+        self.render_timer.start(50)
+
+    def run_detection(self):
+        """HLAVNÍ OpenCV DETEKCE: Popíše databázi abstraktních tvarů `self.shapes`."""
+        if self.cv_img_bgr is None: return
+        self.shapes = []
+        self.split_grids = []
+
+        if self.tabs.currentIndex() == 0:
+            self._detect_auto_mode()
+        else:
+            self._detect_edge_mode()
+
+        self.request_render()
+
+    def run_calculations(self):
+        pass  # Zpětná kompatibilita pro starý timer, logiku jsme rozdělili do detection a render.
+
     def load_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Vybrat soubor k tisku", "", "Podporované formáty (*.pdf *.png *.jpg *.jpeg)"
@@ -452,23 +462,20 @@ class ModernLaserGUI(QMainWindow):
             self.img_item.setPixmap(QPixmap.fromImage(qimg))
             self.btn_save.setEnabled(True)
 
-            self.run_calculations()
+            self.force_detection()
             self.fit_view()
-            self.update_layer_opacity()
 
         except Exception as e:
             QMessageBox.critical(self, "Chyba", f"Chyba při načítání:\n{str(e)}")
         finally:
             self.setCursor(Qt.CursorShape.ArrowCursor)
 
-    # --- GEOMETRIE A MATEMATIKA ---
+    # --- GEOMETRIE ---
     def get_rounded_rect_contour(self, cx, cy, w, h, r, pts_per_corner=15):
         r = min(r, w / 2.0, h / 2.0)
         x = cx - w / 2.0
         y = cy - h / 2.0
-
-        if r <= 0:
-            return np.array([[[x, y]], [[x + w, y]], [[x + w, y + h]], [[x, y + h]]], dtype=float)
+        if r <= 0: return np.array([[[x, y]], [[x + w, y]], [[x + w, y + h]], [[x, y + h]]], dtype=float)
 
         tl = np.column_stack((x + r + r * np.cos(np.linspace(np.pi, 1.5 * np.pi, pts_per_corner)),
                               y + r + r * np.sin(np.linspace(np.pi, 1.5 * np.pi, pts_per_corner))))
@@ -478,7 +485,6 @@ class ModernLaserGUI(QMainWindow):
                               y + h - r + r * np.sin(np.linspace(0, 0.5 * np.pi, pts_per_corner))))
         bl = np.column_stack((x + r + r * np.cos(np.linspace(0.5 * np.pi, np.pi, pts_per_corner)),
                               y + h - r + r * np.sin(np.linspace(0.5 * np.pi, np.pi, pts_per_corner))))
-
         poly = np.vstack((tl, tr, br, bl))
         return poly.reshape(-1, 1, 2)
 
@@ -489,29 +495,11 @@ class ModernLaserGUI(QMainWindow):
         cnt[:, 0, 1] = cy + radius * np.sin(angles)
         return cnt
 
-    def create_single_shape(self, cx, cy, shape_type, w, h, r):
-        if "Kolečko" in shape_type:
-            return self.create_circle_contour(cx, cy, w / 2.0)
-        else:
-            return self.get_rounded_rect_contour(cx, cy, w, h, r)
-
-    # --- LOGIKA ZÁLOŽEK ---
-    def run_calculations(self, *args):
-        if not self._ui_loaded or self.cv_img_bgr is None: return
-
-        if self.tabs.currentIndex() == 0:
-            self._calc_auto_mode()
-        else:
-            self._calc_edge_mode()
-
-        self._calc_fiducials()
-        self.draw_overlay_layer()
-
-    def _calc_auto_mode(self):
+    # --- OpenCV DETEKCE TVARŮ ---
+    def _detect_auto_mode(self):
         threshold_val = self.sld_thresh.value()
         noise_val = self.sld_noise.value()
         close_val = self.sld_close.value()
-        offset = self.sld_offset.value()
         min_area = self.sld_area.value()
 
         use_split = self.chk_split.isChecked()
@@ -519,7 +507,6 @@ class ModernLaserGUI(QMainWindow):
 
         sq_w = self.mm_to_px(self.dim_sq_w.value())
         sq_h = self.mm_to_px(self.dim_sq_h.value())
-        sq_r = self.mm_to_px(self.dim_sq_r.value())
         circ_d = self.mm_to_px(self.dim_circle_d.value())
 
         retrieval_mode = cv2.RETR_LIST if self.chk_inner_holes.isChecked() else cv2.RETR_EXTERNAL
@@ -534,67 +521,54 @@ class ModernLaserGUI(QMainWindow):
             kernel_close = np.ones((close_val, close_val), np.uint8)
             thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
 
-        if offset > 0:
-            kernel_off = np.ones((offset, offset), np.uint8)
-            thresh = cv2.erode(thresh, kernel_off, iterations=1)
-        elif offset < 0:
-            abs_offset = abs(offset)
-            kernel_off = np.ones((abs_offset, abs_offset), np.uint8)
-            thresh = cv2.dilate(thresh, kernel_off, iterations=1)
-
         raw_contours, _ = cv2.findContours(thresh, retrieval_mode, cv2.CHAIN_APPROX_SIMPLE)
 
-        self.auto_contours = []
         for cnt in raw_contours:
             area = cv2.contourArea(cnt)
             if area > min_area:
+                bx, by, bw, bh = cv2.boundingRect(cnt)
 
-                # --- MAGIE ROZKRÁJENÍ (SPLIT) VELKÝCH TVARŮ ---
+                # --- MAGIE ROZKRÁJENÍ ---
                 if use_split:
-                    bx, by, bw, bh = cv2.boundingRect(np.round(cnt).astype(np.int32))
-
-                    # Logika: pokud je najitý flek alespoň 1.3x širší nebo vyšší, než náš jeden tvar,
-                    # je to "slepenec" a my ho rozřežeme do mřížky.
                     expected_w = circ_d if "Kolečko" in split_shape else sq_w
                     expected_h = circ_d if "Kolečko" in split_shape else sq_h
 
                     if bw > expected_w * 1.3 or bh > expected_h * 1.3:
                         cols = max(1, int(round(bw / expected_w)))
                         rows = max(1, int(round(bh / expected_h)))
-
                         step_x = bw / cols
                         step_y = bh / rows
+
+                        # Uložení informace pro růžovou mřížku
+                        self.split_grids.append((bx, by, bw, bh, step_x, step_y, cols, rows))
 
                         for row in range(rows):
                             for col in range(cols):
                                 cx = bx + col * step_x + step_x / 2.0
                                 cy = by + row * step_y + step_y / 2.0
+                                self.shapes.append({'type': split_shape, 'cx': cx, 'cy': cy})
+                        continue
 
-                                if "Kolečko" in split_shape:
-                                    new_cnt = self.create_circle_contour(cx, cy, circ_d / 2.0)
-                                else:
-                                    new_cnt = self.get_rounded_rect_contour(cx, cy, sq_w, sq_h, sq_r)
+                        # Normální tvar
+                (cx, cy), radius = cv2.minEnclosingCircle(cnt)
+                circle_area = np.pi * (radius ** 2)
+                if circle_area > 0 and (area / circle_area) > 0.85:
+                    self.shapes.append({'type': 'Kolečko', 'cx': cx, 'cy': cy})
+                else:
+                    rect = cv2.minAreaRect(cnt)
+                    box_area = rect[1][0] * rect[1][1]
+                    if box_area > 0 and (area / box_area) > 0.85:
+                        self.shapes.append({'type': 'Čtvereček', 'cx': cx, 'cy': cy})
+                    else:
+                        self.shapes.append({'type': 'raw', 'cnt': cnt.astype(float)})
 
-                                self.auto_contours.append(new_cnt)
-                        continue  # Pokud jsme to rozkrájeli, nepřidáváme původní flek
-
-                # Běžné tvary (nebo pokud rozkrájení není aktivní)
-                processed_cnt = cnt.astype(float)
-                self.auto_contours.append(processed_cnt)
-
-    def _calc_edge_mode(self):
-        """Hledání jemných linek uvnitř slepených tvarů."""
+    def _detect_edge_mode(self):
         shape_type = self.cmb_edge_shape.currentText()
-        if "Kolečka" in shape_type:
-            target_w_px = self.mm_to_px(self.dim_circle_d.value())
-            target_h_px = target_w_px
-            target_r_px = 0
-            insert_shape = "Kolečko"
-        else:
-            target_w_px = self.mm_to_px(self.dim_sq_w.value())
-            target_h_px = self.mm_to_px(self.dim_sq_h.value())
-            target_r_px = self.mm_to_px(self.dim_sq_r.value())
-            insert_shape = "Čtverec"
+        insert_shape = "Kolečko" if "Kolečka" in shape_type else "Čtvereček"
+
+        target_w_px = self.mm_to_px(self.dim_circle_d.value()) if insert_shape == "Kolečko" else self.mm_to_px(
+            self.dim_sq_w.value())
+        target_h_px = target_w_px if insert_shape == "Kolečko" else self.mm_to_px(self.dim_sq_h.value())
 
         tolerance = self.sld_edge_tol.value() / 100.0
 
@@ -605,36 +579,51 @@ class ModernLaserGUI(QMainWindow):
         edges = cv2.dilate(edges, kernel, iterations=1)
 
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-
-        self.edge_contours = []
         found_centers = []
 
         for cnt in contours:
             bx, by, bw, bh = cv2.boundingRect(cnt)
-
             if (target_w_px * (1 - tolerance) <= bw <= target_w_px * (1 + tolerance)) and \
                     (target_h_px * (1 - tolerance) <= bh <= target_h_px * (1 + tolerance)):
-
-                cx = bx + bw / 2.0
-                cy = by + bh / 2.0
+                cx, cy = bx + bw / 2.0, by + bh / 2.0
 
                 is_duplicate = False
                 for fcx, fcy in found_centers:
                     if abs(cx - fcx) < 15 and abs(cy - fcy) < 15:
-                        is_duplicate = True
+                        is_duplicate = True;
                         break
 
                 if not is_duplicate:
                     found_centers.append((cx, cy))
-                    new_shape = self.create_single_shape(cx, cy, insert_shape, target_w_px, target_h_px, target_r_px)
-                    self.edge_contours.append(new_shape)
+                    self.shapes.append({'type': insert_shape, 'cx': cx, 'cy': cy})
+
+    # --- VYKRESLOVÁNÍ ---
+    def render_shapes(self):
+        """Převede databázi abstraktních tvarů na reálné pixely na základě horních milimetrů."""
+        self.current_contours = []
+
+        w_px = self.mm_to_px(self.dim_sq_w.value())
+        h_px = self.mm_to_px(self.dim_sq_h.value())
+        r_px = self.mm_to_px(self.dim_sq_r.value())
+        d_px = self.mm_to_px(self.dim_circle_d.value())
+
+        for s in self.shapes:
+            if s['type'] == 'Kolečko':
+                cnt = self.create_circle_contour(s['cx'], s['cy'], d_px / 2.0)
+                self.current_contours.append(cnt)
+            elif s['type'] == 'Čtvereček':
+                cnt = self.get_rounded_rect_contour(s['cx'], s['cy'], w_px, h_px, r_px)
+                self.current_contours.append(cnt)
+            else:
+                self.current_contours.append(s['cnt'])
+
+        self._calc_fiducials()
+        self.draw_overlay_layer()
 
     def _calc_fiducials(self):
         self.fiducial_points = []
-        active_list = self.get_active_list()
-
-        if active_list:
-            all_pts = np.concatenate(active_list)
+        if self.current_contours:
+            all_pts = np.concatenate(self.current_contours)
             x, y, w, h = cv2.boundingRect(np.round(all_pts).astype(np.int32))
             padding = 50
             self.fiducial_points = [
@@ -644,18 +633,31 @@ class ModernLaserGUI(QMainWindow):
                 (x - padding, y + h + padding)
             ]
 
-    # --- KRESLENÍ A EXPORT ---
     def draw_overlay_layer(self):
         if self.cv_img_bgr is None: return
+        self.img_item.setOpacity(self.sld_alpha_img.value() / 100.0)
+        self.cut_item.setOpacity(self.sld_alpha_cut.value() / 100.0)
+        self.img_item.setVisible(self.chk_show_img.isChecked())
+        self.cut_item.setVisible(self.chk_show_cut.isChecked())
+
         w, h = self.img_width_px, self.img_height_px
         overlay = np.zeros((h, w, 4), dtype=np.uint8)
         line_width = max(2, int(0.3 / 25.4 * self.dpi))
 
-        active_list = self.get_active_list()
-
-        if active_list:
-            render = [np.round(c).astype(np.int32) for c in active_list]
+        if self.current_contours:
+            render = [np.round(c).astype(np.int32) for c in self.current_contours]
             cv2.drawContours(overlay, render, -1, (0, 0, 255, 255), line_width)
+
+        # RŮŽOVÁ MŘÍŽKA KRÁJEČE
+        if self.tabs.currentIndex() == 0 and self.chk_show_grid.isChecked() and hasattr(self, 'split_grids'):
+            for (bx, by, bw, bh, step_x, step_y, cols, rows) in self.split_grids:
+                cv2.rectangle(overlay, (int(bx), int(by)), (int(bx + bw), int(by + bh)), (255, 0, 255, 200), line_width)
+                for c in range(1, cols):
+                    x = int(bx + c * step_x)
+                    cv2.line(overlay, (x, int(by)), (x, int(by + bh)), (255, 0, 255, 200), line_width)
+                for r in range(1, rows):
+                    y = int(by + r * step_y)
+                    cv2.line(overlay, (int(bx), y), (int(bx + bw), y), (255, 0, 255, 200), line_width)
 
         if self.fiducial_points:
             display_rad_px = int(2.0 / 25.4 * self.dpi)
@@ -666,24 +668,13 @@ class ModernLaserGUI(QMainWindow):
         qimg_overlay = QImage(overlay.data, w, h, bytes_per_line, QImage.Format.Format_ARGB32)
         self.cut_item.setPixmap(QPixmap.fromImage(qimg_overlay))
 
-    def update_layer_opacity(self, *args):
-        if not self._ui_loaded: return
-        self.img_item.setOpacity(self.sld_alpha_img.value() / 100.0)
-        self.cut_item.setOpacity(self.sld_alpha_cut.value() / 100.0)
-
-    def update_layer_visibility(self, *args):
-        if not self._ui_loaded: return
-        self.img_item.setVisible(self.chk_show_img.isChecked())
-        self.cut_item.setVisible(self.chk_show_cut.isChecked())
-
     def fit_view(self):
         if self.cv_img_bgr is not None:
             rect = self.scene.itemsBoundingRect()
             self.view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
 
     def save_dxf(self):
-        active_list = self.get_active_list()
-        if not active_list:
+        if not self.current_contours:
             QMessageBox.warning(self, "Prázdné", "Nejsou žádné křivky k uložení.")
             return
 
@@ -695,22 +686,14 @@ class ModernLaserGUI(QMainWindow):
             doc = ezdxf.new('R2010')
             h_img = self.img_height_px
 
-            if self.chk_force_a4.isChecked():
-                if self.img_width_px > self.img_height_px:
-                    scale_x = 297.0 / self.img_width_px
-                    scale_y = 210.0 / self.img_height_px
-                else:
-                    scale_x = 210.0 / self.img_width_px
-                    scale_y = 297.0 / self.img_height_px
-            else:
-                scale_x = 25.4 / self.dpi
-                scale_y = 25.4 / self.dpi
+            scale_x = 25.4 / self.dpi
+            scale_y = 25.4 / self.dpi
 
             lyr_cuts = doc.layers.new(name='CUT_STICKERS')
             lyr_cuts.color = 1
             msp = doc.modelspace()
 
-            for cnt in active_list:
+            for cnt in self.current_contours:
                 points = [(pt[0][0] * scale_x, (h_img - pt[0][1]) * scale_y) for pt in cnt]
                 msp.add_lwpolyline(points, close=True, dxfattribs={'layer': 'CUT_STICKERS'})
 
@@ -733,8 +716,6 @@ class ModernLaserGUI(QMainWindow):
 
 
 if __name__ == "__main__":
-    import os
-
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     window = ModernLaserGUI()

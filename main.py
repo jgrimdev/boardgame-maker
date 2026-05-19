@@ -83,8 +83,9 @@ class MasterGUI(QMainWindow):
             ("✂️ E: Sprite Slicer", "tools.app_sprite_slicer", "SlicerStudioApp"),
             ("📦 F: Generátor Krabiček", "tools.app_box_generator", "BoxGeneratorApp"),
             ("⬡ G: Sazba Hexagonů", "tools.app_hex_imposer", "HexImposerApp"),
-            ("🖌️ H: Vizuální Editor (BETA)", "tools.app_visual_editor", "VisualEditorApp"),
-            ("📑 I: PDF Imposer (Vektorový)", "tools.app_pdf_imposer", "PdfImposerApp")
+            # ("🖌️ H: Vizuální Editor (BETA)", "tools.app_visual_editor", "VisualEditorApp"),
+            ("📑 I: PDF Imposer (Vektorový)", "tools.app_pdf_imposer", "PdfImposerApp"),
+            # ("📑 J: Root DXF (Vektorový) BETA", "test_modules.app_sticker_root", "StickerImposerApp")
         ]
 
         self.loaded_apps = [None] * len(self.tab_classes)
