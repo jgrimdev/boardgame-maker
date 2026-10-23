@@ -1,4 +1,4 @@
-import os
+import math
 import textwrap
 from PIL import Image, ImageDraw, ImageFont
 
@@ -6,26 +6,36 @@ from PIL import Image, ImageDraw, ImageFont
 BASE_W = 500
 BASE_H = 700
 
-STYLY_KARET = {
+BARVY = {
     "pozadi": (255, 255, 255),
+    "ram_karty": (35, 35, 35),
+    "text_tmavy": (25, 25, 25),
+    "text_sedy": (115, 115, 115),
+    "linka_jemna": (215, 215, 215),
+
     "zbozi": {
         "zelena": (34, 139, 34),
-        "zluta": (204, 153, 0),
+        "zluta": (204, 140, 0),
         "hneda": (139, 69, 19),
-        "cervena": (178, 34, 34)
+        "cervena": (185, 35, 35)
     },
     "lode": {
-        "hlavicka_normal": (70, 130, 180),
-        "hlavicka_past": (178, 34, 34),
-        "text_pasazer": (50, 150, 50),
-        "text_past": (200, 0, 0)
+        "normal": (35, 100, 160),      # Námořnická modrá
+        "past": (180, 35, 35),         # Rudá pro pasti
+        "slot_ram": (135, 155, 175),
+        "slot_posledni": (204, 135, 0) # Zlatavá pro poslední slot
     },
     "trh": {
-        "hlavicka_pasivni": (70, 130, 180),
-        "hlavicka_jednoraz": (178, 34, 34),
-        "hlavicka_prestiz": (218, 165, 32),
-        "text_cena": (200, 100, 0),
-        "text_body": (0, 150, 0)
+        "pasivni": (40, 115, 165),     # Modrá
+        "jednoraz": (175, 50, 45),     # Červená
+        "prestiz": (190, 135, 20),     # Zlatá
+        "ram_vnitrni": (155, 140, 120)
+    },
+    "odznaky": {
+        "musle": (195, 115, 10),
+        "vb_plus": (35, 135, 50),
+        "vb_minus": (185, 35, 35),
+        "vb_nula": (120, 120, 120)
     }
 }
 
@@ -38,46 +48,128 @@ def get_safe_filename(prefix, name):
     return f"{prefix}_{safe_name}.png"
 
 
-def zalom_text(text, sirka_znaku=25):
-    if not text: return ""
+def zalom_text(text, sirka_znaku=28):
+    if not text:
+        return ""
     return textwrap.fill(str(text), width=sirka_znaku)
+
+
+def sklonuj_musle(pocet):
+    abs_m = abs(int(pocet))
+    if 1 <= abs_m <= 4:
+        return "Mušle"
+    return "Mušlí"
 
 
 class CardRenderer:
     def __init__(self):
-        try:
-            self.font_big = ImageFont.truetype("arialbd.ttf", 150)
-            self.font_mid = ImageFont.truetype("arialbd.ttf", 50)
-            self.font_small = ImageFont.truetype("arial.ttf", 25)
-            self.font_title = ImageFont.truetype("arialbd.ttf", 35)
-        except IOError:
-            self.font_big = self.font_mid = self.font_small = self.font_title = ImageFont.load_default()
+        self.font_big = self._load_font(["arialbd.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 145)
+        self.font_badge_num = self._load_font(["arialbd.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 42)
+        self.font_title = self._load_font(["arialbd.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 29)
+        self.font_subtitle = self._load_font(["arialbd.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 21)
+        self.font_body_bold = self._load_font(["arialbd.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 24)
+        self.font_small = self._load_font(["arial.ttf", "DejaVuSans.ttf", "segoeui.ttf"], 21)
+        self.font_tiny = self._load_font(["arialbd.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 15)
 
-    def nakresli_ramecek(self, draw, tloustka=3, barva=(0, 0, 0)):
-        draw.rectangle([0, 0, BASE_W - 1, BASE_H - 1], outline=barva, width=tloustka)
+    def _load_font(self, font_names, size):
+        for name in font_names:
+            try:
+                return ImageFont.truetype(name, size)
+            except IOError:
+                continue
+        return ImageFont.load_default()
 
-    def vycentruj_text(self, draw, text, font, y_pos, barva=(0, 0, 0)):
+    # ==========================================
+    # 🛠️ POMOCNÉ FUNKCE PRO TEXT A TVARY
+    # ==========================================
+    def _get_text_size(self, draw, text, font):
         try:
             bbox = draw.textbbox((0, 0), str(text), font=font)
-            sirka_textu = bbox[2] - bbox[0]
+            return bbox[2] - bbox[0], bbox[3] - bbox[1]
         except AttributeError:
-            sirka_textu, _ = draw.textsize(str(text), font=font)
-        x_pos = (BASE_W - sirka_textu) / 2
+            return draw.textsize(str(text), font=font)
+
+    def vycentruj_text(self, draw, text, font, y_pos, barva=(0, 0, 0)):
+        w, _ = self._get_text_size(draw, text, font)
+        x_pos = (BASE_W - w) / 2
         draw.text((x_pos, y_pos), str(text), font=font, fill=barva)
 
     def vycentruj_text_v_boxu(self, draw, text, font, box_x1, box_x2, y_pos, barva=(0, 0, 0)):
-        try:
-            bbox = draw.textbbox((0, 0), str(text), font=font)
-            sirka_textu = bbox[2] - bbox[0]
-        except AttributeError:
-            sirka_textu, _ = draw.textsize(str(text), font=font)
+        w, _ = self._get_text_size(draw, text, font)
         stred_boxu = box_x1 + (box_x2 - box_x1) / 2
-        x_pos = stred_boxu - (sirka_textu / 2)
+        x_pos = stred_boxu - (w / 2)
         draw.text((x_pos, y_pos), str(text), font=font, fill=barva)
 
+    def vycentruj_multiline(self, draw, text, font, y_pos, barva=(0, 0, 0), sirka_znaku=28, spacing=8):
+        zalomene = zalom_text(text, sirka_znaku)
+        try:
+            bbox = draw.multiline_textbbox((0, 0), zalomene, font=font, align="center", spacing=spacing)
+            w = bbox[2] - bbox[0]
+        except AttributeError:
+            w, _ = self._get_text_size(draw, zalomene.split('\n')[0], font)
+        x_pos = (BASE_W - w) / 2
+        draw.multiline_text((x_pos, y_pos), zalomene, font=font, fill=barva, align="center", spacing=spacing)
+
+    def kresli_hvezdu(self, draw, cx, cy, r_outer, barva):
+        r_inner = r_outer * 0.42
+        body = []
+        for i in range(10):
+            angle = math.radians(i * 36 - 90)
+            r = r_outer if i % 2 == 0 else r_inner
+            body.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+        draw.polygon(body, fill=barva)
+
+    def kresli_lodku(self, draw, cx, cy, barva):
+        draw.polygon([(cx - 14, cy + 2), (cx + 14, cy + 2), (cx + 9, cy + 9), (cx - 9, cy + 9)], fill=barva)
+        draw.polygon([(cx - 2, cy - 10), (cx - 2, cy - 1), (cx + 10, cy - 1)], fill=barva)
+        draw.line([(cx - 2, cy - 10), (cx - 2, cy + 2)], fill=barva, width=2)
+
+    def kresli_varovani(self, draw, cx, cy, barva):
+        draw.polygon([(cx, cy - 10), (cx - 11, cy + 9), (cx + 11, cy + 9)], outline=barva, width=2)
+        draw.line([(cx, cy - 3), (cx, cy + 3)], fill=barva, width=2)
+        draw.ellipse([cx - 1, cy + 5, cx + 1, cy + 7], fill=barva)
+
+    def kresli_velky_odznak_musle(self, draw, x1, y1, x2, y2, mince_int, dolni_text):
+        """Velký geometrický osmiúhelník (drahokam) s místem na přepsání čísla propiskou."""
+        barva = BARVY["odznaky"]["vb_minus"] if mince_int < 0 else BARVY["odznaky"]["musle"]
+        c = 16  # Zkosení rohů
+        tvar = [
+            (x1 + c, y1), (x2 - c, y1),
+            (x2, y1 + c), (x2, y2 - c),
+            (x2 - c, y2), (x1 + c, y2),
+            (x1, y2 - c), (x1, y1 + c)
+        ]
+        draw.polygon(tvar, fill=(255, 255, 255), outline=barva, width=3)
+
+        # Číslo bez znaménka plus (záporné číslo si mínus nese v sobě)
+        self.vycentruj_text_v_boxu(draw, str(mince_int), self.font_badge_num, x1, x2, y1 + 14, barva=barva)
+        self.vycentruj_text_v_boxu(draw, dolni_text, self.font_tiny, x1, x2, y2 - 24, barva=barva)
+
+    def kresli_velky_odznak_vb(self, draw, x1, y1, x2, y2, body_int):
+        """Velký erb/štít pro VB s místem na přepsání čísla propiskou."""
+        if body_int > 0:
+            barva = BARVY["odznaky"]["vb_plus"]
+        elif body_int < 0:
+            barva = BARVY["odznaky"]["vb_minus"]
+        else:
+            barva = BARVY["odznaky"]["vb_nula"]
+
+        cx = (x1 + x2) // 2
+        stit = [
+            (x1, y1),
+            (x2, y1),
+            (x2, y2 - 24),
+            (cx, y2),
+            (x1, y2 - 24)
+        ]
+        draw.polygon(stit, fill=(255, 255, 255), outline=barva, width=3)
+
+        # Číslo bez znaménka plus (záporné číslo si mínus nese v sobě)
+        self.vycentruj_text_v_boxu(draw, str(body_int), self.font_badge_num, x1, x2, y1 + 14, barva=barva)
+        self.vycentruj_text_v_boxu(draw, "VB", self.font_tiny, x1, x2, y2 - 28, barva=barva)
+
     def render(self, card_data, target_w_px, target_h_px):
-        """Vykreslí kartu na 500x700 a pak ji zvětší/zmenší na požadovaný rozměr"""
-        img = Image.new('RGB', (BASE_W, BASE_H), STYLY_KARET["pozadi"])
+        img = Image.new('RGB', (BASE_W, BASE_H), BARVY["pozadi"])
         draw = ImageDraw.Draw(img)
 
         kat = card_data.get("kategorie", "")
@@ -96,152 +188,216 @@ class CardRenderer:
 
         return img
 
+    # ==========================================
+    # 📦 1. KARTY ZBOŽÍ
+    # ==========================================
     def _kresli_zbozi(self, draw, c):
         cislo = c.get("cislo", 0)
         nazev = c.get("nazev", "")
 
         if cislo <= 15:
-            barva = STYLY_KARET["zbozi"]["zelena"]
+            barva = BARVY["zbozi"]["zelena"]
         elif cislo <= 30:
-            barva = STYLY_KARET["zbozi"]["zluta"]
+            barva = BARVY["zbozi"]["zluta"]
         elif cislo <= 45:
-            barva = STYLY_KARET["zbozi"]["hneda"]
+            barva = BARVY["zbozi"]["hneda"]
         else:
-            barva = STYLY_KARET["zbozi"]["cervena"]
+            barva = BARVY["zbozi"]["cervena"]
 
-        self.nakresli_ramecek(draw, tloustka=5, barva=barva)
-        draw.rectangle([15, 15, BASE_W - 15, BASE_H - 15], outline=barva, width=2)
-        draw.text((40, 40), str(cislo), font=self.font_mid, fill=barva)
-        draw.text((BASE_W - 100, BASE_H - 90), str(cislo), font=self.font_mid, fill=barva)
-        self.vycentruj_text(draw, str(cislo), self.font_big, BASE_H / 2 - 90, barva=barva)
-        self.vycentruj_text(draw, str(nazev).upper(), self.font_title, BASE_H - 150, barva=(0, 0, 0))
-        self.vycentruj_text(draw, "ZBOŽÍ", self.font_small, BASE_H - 100, barva=(100, 100, 100))
+        draw.rectangle([0, 0, BASE_W - 1, BASE_H - 1], outline=BARVY["ram_karty"], width=3)
+        draw.rounded_rectangle([18, 18, BASE_W - 18, BASE_H - 18], radius=16, outline=barva, width=4)
 
+        draw.text((40, 35), str(cislo), font=self.font_badge_num, fill=barva)
+        w_num, _ = self._get_text_size(draw, str(cislo), self.font_badge_num)
+        draw.text((BASE_W - 40 - w_num, BASE_H - 85), str(cislo), font=self.font_badge_num, fill=barva)
+
+        self.vycentruj_text(draw, str(cislo), self.font_big, 220, barva=barva)
+
+        draw.line([100, BASE_H - 170, BASE_W - 100, BASE_H - 170], fill=barva, width=2)
+        self.vycentruj_text(draw, str(nazev).upper(), self.font_title, BASE_H - 150, barva=BARVY["text_tmavy"])
+        self.vycentruj_text(draw, "ZBOŽÍ", self.font_tiny, BASE_H - 105, barva=BARVY["text_sedy"])
+
+    # ==========================================
+    # ⛵ 2. KARTY LODÍ
+    # ==========================================
     def _kresli_lod(self, draw, c):
-        self.nakresli_ramecek(draw)
         je_past = c.get("je_past", False)
-        kapacita = max(1, c.get("kapacita", 1))
+        kapacita = max(1, int(c.get("kapacita", 1)))
+        barva_hlavni = BARVY["lode"]["past"] if je_past else BARVY["lode"]["normal"]
 
-        barva_hlavicky = STYLY_KARET["lode"]["hlavicka_past"] if je_past else STYLY_KARET["lode"]["hlavicka_normal"]
-        
-        # 1. HLAVIČKA
-        draw.rectangle([10, 10, BASE_W - 10, 110], outline=barva_hlavicky, width=4)
+        # Horní barevný proužek + vnější rám
+        draw.rectangle([0, 0, BASE_W, 12], fill=barva_hlavni)
+        draw.rectangle([0, 0, BASE_W - 1, BASE_H - 1], outline=BARVY["ram_karty"], width=3)
 
-        # Odznak VB v pravém rohu
-        right_bound = BASE_W - 10
-        body_val = c.get("body", None)
-        if body_val is not None and str(body_val).strip() != "":
-            body_int = int(body_val)
-            right_bound = BASE_W - 110
-            barva_vb = (200, 0, 0) if body_int < 0 else (0, 150, 0)
-            draw.rectangle([BASE_W - 110, 10, BASE_W - 10, 110], outline=barva_hlavicky, width=4,
-                           fill=(255, 240, 240) if body_int < 0 else (240, 255, 240))
-            znaminko = "+" if body_int > 0 else ""
-            self.vycentruj_text_v_boxu(draw, f"{znaminko}{body_int}", self.font_mid, BASE_W - 110, BASE_W - 10, 25,
-                                       barva=barva_vb)
-            self.vycentruj_text_v_boxu(draw, "VB", self.font_small, BASE_W - 110, BASE_W - 10, 75, barva=barva_vb)
+        mince_val = c.get("mince", 0)
+        mince_int = int(mince_val) if mince_val is not None and str(mince_val).strip() != "" else 0
 
-        # Texty hlavičky
-        self.vycentruj_text_v_boxu(draw, c.get("nazev", ""), self.font_title, 10, right_bound, 25, barva=barva_hlavicky)
-        podtitul = "PAST" if je_past else "LOĎ"
-        self.vycentruj_text_v_boxu(draw, f"▼ {podtitul} ▼", self.font_small, 10, right_bound, 70, barva=barva_hlavicky)
+        body_val = c.get("body", 0)
+        body_int = int(body_val) if body_val is not None and str(body_val).strip() != "" else 0
 
-        # 2. TĚLO - Kapacita
-        start_y = 150
-        mezera = 65
-        self.vycentruj_text(draw, f"KAPACITA: {kapacita}", self.font_small, start_y - 35)
+        # 1. HLAVIČKA: Jediné místo, kde jsou čísla Mušlí a VB (snadná úprava propiskou)
+        self.kresli_velky_odznak_musle(
+            draw, x1=16, y1=22, x2=116, y2=127,
+            mince_int=mince_int,
+            dolni_text=sklonuj_musle(mince_int).upper()
+        )
+        self.kresli_velky_odznak_vb(
+            draw, x1=BASE_W - 116, y1=22, x2=BASE_W - 16, y2=127,
+            body_int=body_int
+        )
+
+        # Název lodi uprostřed
+        nazev = str(c.get("nazev", ""))
+        if len(nazev) > 14:
+            self.vycentruj_multiline(draw, nazev, self.font_body_bold, 28, barva=BARVY["text_tmavy"], sirka_znaku=14, spacing=2)
+        else:
+            self.vycentruj_text_v_boxu(draw, nazev, self.font_title, 122, BASE_W - 122, 36, barva=BARVY["text_tmavy"])
+
+        podtitul = f"PAST • KAPACITA {kapacita}" if je_past else f"LOĎ • KAPACITA {kapacita}"
+        self.vycentruj_text_v_boxu(draw, podtitul, self.font_tiny, 122, BASE_W - 122, 92, barva=barva_hlavni)
+        if je_past:
+            self.kresli_varovani(draw, BASE_W // 2, 118, barva_hlavni)
+        else:
+            self.kresli_lodku(draw, BASE_W // 2, 118, barva_hlavni)
+
+        draw.line([25, 142, BASE_W - 25, 142], fill=barva_hlavni, width=2)
+
+        # 2. STŘED KARTY: Vizuální nákladní sloty (bez duplicitních čísel)
+        slot_area_top = 162
+        slot_area_bottom = 525
+        available_h = slot_area_bottom - slot_area_top
+
+        slot_h = min(64, int((available_h - (kapacita - 1) * 20) / max(1, kapacita)))
+        gap = min(26, int((available_h - kapacita * slot_h) / max(1, kapacita)))
+        total_slots_h = kapacita * slot_h + (kapacita - 1) * gap
+        start_y = slot_area_top + (available_h - total_slots_h) // 2
 
         for i in range(kapacita):
-            y = start_y + (i * mezera)
-            draw.rectangle([80, y, BASE_W - 80, y + 50], outline=(0, 0, 0), width=2)
-            ikona = "[ Poslední zboží ]" if i == kapacita - 1 else "[ zboží ]"
-            self.vycentruj_text(draw, ikona, self.font_small, y + 10, barva=(100, 100, 100))
+            y = start_y + i * (slot_h + gap)
+            je_posledni = (i == kapacita - 1)
 
-        # 3. ODMĚNA PRO PASAŽÉRY
-        y_odmeny = start_y + (kapacita * mezera) + 30
-        draw.rectangle([30, y_odmeny, BASE_W - 30, BASE_H - 30], outline=(0, 0, 0), width=3)
-        self.vycentruj_text(draw, "Odměna za vložené zboží:", self.font_small, y_odmeny + 15)
+            if i > 0:
+                mid_x = BASE_W // 2
+                y_arrow_top = y - gap + 4
+                y_arrow_bot = y - 4
+                draw.line([(mid_x, y_arrow_top), (mid_x, y_arrow_bot)], fill=BARVY["lode"]["slot_ram"], width=2)
+                draw.polygon([(mid_x - 5, y_arrow_bot - 5), (mid_x + 5, y_arrow_bot - 5), (mid_x, y_arrow_bot)],
+                             fill=BARVY["lode"]["slot_ram"])
 
-        display_body = int(body_val) if body_val is not None and str(body_val).strip() != "" else 0
-        txt_majitel = f"Poslední karta: {display_body} VB"
+            if je_posledni:
+                barva_slotu = BARVY["lode"]["past"] if body_int < 0 else BARVY["lode"]["slot_posledni"]
+                tloustka = 3
+            else:
+                barva_slotu = BARVY["lode"]["slot_ram"]
+                tloustka = 2
 
-        mince_val = c.get('mince', 0)
-        display_mince = int(mince_val) if mince_val is not None and str(mince_val).strip() != "" else 0
-        abs_m = abs(display_mince)
-        if abs_m == 1:
-            txt_pasazer = f"Odměna: {display_mince} Mušle"
-        elif 2 <= abs_m <= 4:
-            txt_pasazer = f"Odměna: {display_mince} Mušle"
-        else:
-            txt_pasazer = f"Odměna: {display_mince} Mušlí"
+            draw.rounded_rectangle([55, y, BASE_W - 55, y + slot_h], radius=10, fill=(255, 255, 255), outline=barva_slotu, width=tloustka)
 
-        barva_pasazer = STYLY_KARET["lode"]["text_past"] if je_past else STYLY_KARET["lode"]["text_pasazer"]
+            cy_slot = y + slot_h // 2
+            r_num = min(18, slot_h // 2 - 6)
+            cx_num = 85
+            if je_posledni:
+                draw.ellipse([cx_num - r_num, cy_slot - r_num, cx_num + r_num, cy_slot + r_num], fill=barva_slotu)
+                self.vycentruj_text_v_boxu(draw, str(i + 1), self.font_subtitle, cx_num - r_num, cx_num + r_num, cy_slot - 12, barva=(255, 255, 255))
+            else:
+                draw.ellipse([cx_num - r_num, cy_slot - r_num, cx_num + r_num, cy_slot + r_num], outline=barva_slotu, width=2)
+                self.vycentruj_text_v_boxu(draw, str(i + 1), self.font_subtitle, cx_num - r_num, cx_num + r_num, cy_slot - 12, barva=BARVY["text_sedy"])
 
-        self.vycentruj_text(draw, txt_majitel, self.font_title, y_odmeny + 55, barva=(0, 0, 0))
-        self.vycentruj_text(draw, txt_pasazer, self.font_title, y_odmeny + 95, barva=barva_pasazer)
+            # Čistý popis slotu bez číselných hodnot
+            if je_posledni:
+                self.vycentruj_text_v_boxu(draw, "Poslední zboží", self.font_subtitle, 115, BASE_W - 85, cy_slot - 12, barva=barva_slotu)
+                self.kresli_hvezdu(draw, BASE_W - 78, cy_slot, 9, barva_slotu)
+            else:
+                self.vycentruj_text_v_boxu(draw, "Zboží", self.font_small, 115, BASE_W - 100, cy_slot - 12, barva=BARVY["text_sedy"])
+
+        # 3. SPODNÍ ČÁST: Prostor pro speciální efekt nebo ruční poznámky
+        draw.line([40, 545, BASE_W - 40, 545], fill=BARVY["linka_jemna"], width=2)
 
         efekt = c.get("efekt", "")
-        if efekt and str(efekt).strip() != "-":
-            zalomene = zalom_text(efekt, 35)
-            draw.multiline_text((50, y_odmeny + 145), zalomene, font=self.font_small, fill=(200, 0, 0), align="center", spacing=5)
+        if efekt and str(efekt).strip() not in ["", "-", "None"]:
+            self.vycentruj_multiline(draw, efekt, self.font_body_bold, 560, barva=BARVY["lode"]["past"], sirka_znaku=32, spacing=4)
 
+        self.vycentruj_text(draw, "LOĎ", self.font_tiny, 655, barva=BARVY["text_sedy"])
+
+    # ==========================================
+    # ⚖️ 3. KARTY TRHU
+    # ==========================================
     def _kresli_trh(self, draw, c):
-        self.nakresli_ramecek(draw)
         podtyp = str(c.get("podtyp", "")).lower()
 
         if "pasiv" in podtyp:
-            barva_hlavicky = STYLY_KARET["trh"]["hlavicka_pasivni"]
+            barva_kat = BARVY["trh"]["pasivni"]
         elif "jednor" in podtyp or "trik" in podtyp:
-            barva_hlavicky = STYLY_KARET["trh"]["hlavicka_jednoraz"]
+            barva_kat = BARVY["trh"]["jednoraz"]
         else:
-            barva_hlavicky = STYLY_KARET["trh"]["hlavicka_prestiz"]
+            barva_kat = BARVY["trh"]["prestiz"]
 
-        # 1. HLAVIČKA - Dvojitý tenký rámeček
-        draw.rectangle([10, 10, BASE_W - 10, 110], outline=barva_hlavicky, width=2)
-        draw.rectangle([16, 16, BASE_W - 16, 104], outline=barva_hlavicky, width=1)
+        draw.rectangle([0, 0, BASE_W - 1, BASE_H - 1], outline=BARVY["ram_karty"], width=3)
 
-        left_bound = 10
-        right_bound = BASE_W - 10
+        # Vnitřní rám se zkosenými rohy
+        m = 10
+        zkos = 20
+        body_ramu = [
+            (m + zkos, m), (BASE_W - m - zkos, m),
+            (BASE_W - m, m + zkos), (BASE_W - m, BASE_H - m - zkos),
+            (BASE_W - m - zkos, BASE_H - m), (m + zkos, BASE_H - m),
+            (m, BASE_H - m - zkos), (m, m + zkos)
+        ]
+        draw.polygon(body_ramu, outline=BARVY["trh"]["ram_vnitrni"], width=2)
 
-        cena_val = c.get("cena", None)
-        if cena_val is not None and str(cena_val).strip() != "":
-            left_bound = 110
-            draw.rectangle([10, 10, 110, 110], outline=barva_hlavicky, width=4, fill=(255, 250, 200))
-            self.vycentruj_text_v_boxu(draw, str(cena_val), self.font_mid, 10, 110, 25, barva=STYLY_KARET["trh"]["text_cena"])
-            self.vycentruj_text_v_boxu(draw, "Mušlí", self.font_small, 10, 110, 75, barva=STYLY_KARET["trh"]["text_cena"])
+        # 1. HLAVIČKA: Velký šestiúhelník vlevo (Mušle), Velký štít vpravo (VB)
+        cena_val = c.get("cena", 0)
+        cena_int = int(cena_val) if cena_val is not None and str(cena_val).strip() != "" else 0
 
-        body_val = c.get("body", None)
-        if body_val is not None and str(body_val).strip() != "":
-            right_bound = BASE_W - 110
-            draw.rectangle([BASE_W - 110, 10, BASE_W - 10, 110], outline=barva_hlavicky, width=4,
-                           fill=(240, 255, 240))
-            znaminko = "+" if int(body_val) > 0 else ""
-            self.vycentruj_text_v_boxu(draw, f"{znaminko}{body_val}", self.font_mid, BASE_W - 110, BASE_W - 10, 25,
-                                       barva=STYLY_KARET["trh"]["text_body"])
-            self.vycentruj_text_v_boxu(draw, "VB", self.font_small, BASE_W - 110, BASE_W - 10, 75,
-                                       barva=STYLY_KARET["trh"]["text_body"])
+        body_val = c.get("body", 0)
+        body_int = int(body_val) if body_val is not None and str(body_val).strip() != "" else 0
 
-        # Názvy uprostřed hlavičky
-        self.vycentruj_text_v_boxu(draw, c.get("nazev", ""), self.font_title, left_bound, right_bound, 25, barva=barva_hlavicky)
-        self.vycentruj_text_v_boxu(draw, f"♦ {str(c.get('podtyp', '')).upper()} ♦", self.font_small, left_bound, right_bound, 70,
-                                   barva=barva_hlavicky)
+        self.kresli_velky_odznak_musle(
+            draw, x1=20, y1=22, x2=120, y2=127,
+            mince_int=cena_int,
+            dolni_text=sklonuj_musle(cena_int).upper()
+        )
+        self.kresli_velky_odznak_vb(
+            draw, x1=BASE_W - 120, y1=22, x2=BASE_W - 20, y2=127,
+            body_int=body_int
+        )
 
-        # 2. TĚLO - Volný prostor pro efekty
-        y_efekt = 140
+        # Název karty uprostřed
+        nazev = str(c.get("nazev", ""))
+        if len(nazev) > 14:
+            self.vycentruj_multiline(draw, nazev, self.font_body_bold, 28, barva=BARVY["text_tmavy"], sirka_znaku=14, spacing=2)
+        else:
+            self.vycentruj_text_v_boxu(draw, nazev, self.font_title, 124, BASE_W - 124, 36, barva=BARVY["text_tmavy"])
+
+        # Štítek podtypu
+        draw.rounded_rectangle([145, 92, BASE_W - 145, 122], radius=8, fill=(255, 255, 255), outline=barva_kat, width=2)
+        podtyp_txt = str(c.get("podtyp", "TRH")).upper()
+        self.vycentruj_text_v_boxu(draw, podtyp_txt, self.font_tiny, 145, BASE_W - 145, 98, barva=barva_kat)
+
+        # Oddělovací linka s kosočtvercem hned pod hlavičkou
+        y_orn_top = 152
+        cx = BASE_W // 2
+        draw.line([40, y_orn_top, cx - 16, y_orn_top], fill=barva_kat, width=2)
+        draw.line([cx + 16, y_orn_top, BASE_W - 40, y_orn_top], fill=barva_kat, width=2)
+        draw.polygon([(cx, y_orn_top - 6), (cx + 6, y_orn_top), (cx, y_orn_top + 6), (cx - 6, y_orn_top)], fill=barva_kat)
+
+        # 2. TEXT EFEKTU NAHOŘE (začíná hned na Y=180, pod ním zůstává volný prostor)
         efekt = c.get("efekt", "")
-        if efekt and str(efekt).strip() != "-":
-            draw.rectangle([30, y_efekt, BASE_W - 30, BASE_H - 40], outline=(100, 100, 100), width=2)
-            self.vycentruj_text(draw, "EFEKT KARTY:", self.font_small, y_efekt + 20)
-            zalomene = zalom_text(efekt, 32)
-            draw.multiline_text((50, y_efekt + 70), zalomene, font=self.font_small, fill=(0, 0, 0), align="center", spacing=10)
+        if efekt and str(efekt).strip() not in ["", "-", "None"]:
+            self.vycentruj_multiline(draw, efekt, self.font_body_bold, 180, barva=BARVY["text_tmavy"], sirka_znaku=28, spacing=8)
 
+        # Jemná uzavírací linka dole a patička
+        draw.line([140, BASE_H - 65, BASE_W - 140, BASE_H - 65], fill=BARVY["linka_jemna"], width=1)
+        self.vycentruj_text(draw, "TRH", self.font_tiny, BASE_H - 48, barva=BARVY["text_sedy"])
+
+    # ==========================================
+    # 📄 4. OSTATNÍ KARTY
+    # ==========================================
     def _kresli_ostatni(self, draw, c):
-        self.nakresli_ramecek(draw)
-        barva_hlavicky = (100, 100, 100)
-        draw.rectangle([10, 10, BASE_W - 10, 110], outline=barva_hlavicky, width=4)
-        self.vycentruj_text(draw, str(c.get("nazev", "")).upper(), self.font_title, 35, barva=barva_hlavicky)
+        draw.rectangle([0, 0, BASE_W - 1, BASE_H - 1], outline=BARVY["ram_karty"], width=3)
+        self.vycentruj_text(draw, str(c.get("nazev", "")).upper(), self.font_title, 45, barva=BARVY["text_tmavy"])
+        draw.line([40, 105, BASE_W - 40, 105], fill=BARVY["text_sedy"], width=2)
 
         efekt = c.get("efekt", "")
         if efekt and str(efekt).strip() != "-":
-            zalomene = zalom_text(efekt, 35)
-            draw.multiline_text((40, 150), zalomene, font=self.font_small, fill=(0, 0, 0), align="left", spacing=8)
+            self.vycentruj_multiline(draw, efekt, self.font_small, 140, barva=BARVY["text_tmavy"], sirka_znaku=32, spacing=8)
